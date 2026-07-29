@@ -1,0 +1,6 @@
+{
+  "name": "AuraChat",
+  "description": "A minimalist, UX-focused Android chat application featuring an elegant dark mode, smooth message flows, and clean design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
