@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.screens.ChatDetailScreen
 import com.example.ui.screens.ChatListScreen
+import com.example.ui.screens.ConnectScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.WelcomeNameScreen
@@ -47,11 +48,15 @@ fun AuraChatApp(viewModel: ChatViewModel) {
     val currentScreen by viewModel.currentScreen.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val chatThreads by viewModel.chatThreads.collectAsState()
+    val connectionState by viewModel.connectionState.collectAsState()
+    val connectionError by viewModel.connectionError.collectAsState()
 
     val totalUnread = chatThreads.sumOf { it.unreadCount }
 
     AuraChatTheme(themeMode = themeMode) {
-        val showBottomNav = currentScreen !is Screen.ChatDetail && currentScreen !is Screen.WelcomeName
+        val showBottomNav = currentScreen !is Screen.ChatDetail
+                && currentScreen !is Screen.WelcomeName
+                && currentScreen !is Screen.Connect
 
         Scaffold(
             bottomBar = {
@@ -171,6 +176,18 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                                 onNameEntered = { newName ->
                                     viewModel.saveAndSetUserName(newName)
                                 }
+                            )
+                        }
+
+                        is Screen.Connect -> {
+                            val savedName = viewModel.currentUser.collectAsState().value.name
+                            ConnectScreen(
+                                connectionState = connectionState,
+                                savedName = savedName,
+                                onConnect = { ip, port, name ->
+                                    viewModel.connectToServer(ip, port, name)
+                                },
+                                errorMessage = connectionError
                             )
                         }
 

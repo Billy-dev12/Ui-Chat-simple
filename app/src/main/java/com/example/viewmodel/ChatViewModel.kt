@@ -4,23 +4,30 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ChatDatabase
+import com.example.data.toEntity
+import com.example.data.toMessage
 import com.example.model.ChatThread
 import com.example.model.ContactItem
 import com.example.model.Message
 import com.example.model.MessageStatus
 import com.example.model.MessageType
 import com.example.model.User
-import com.example.model.UserStory
+import com.example.network.ChatClient
+import com.example.network.ConnectionState
 import com.example.ui.theme.AppThemeMode
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 sealed class Screen {
     object WelcomeName : Screen()
+    object Connect : Screen()
     object ChatList : Screen()
     data class ChatDetail(val chatId: String) : Screen()
     object Contacts : Screen()
@@ -28,6 +35,11 @@ sealed class Screen {
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val db = ChatDatabase.getDatabase(application)
+    private val messageDao = db.messageDao()
+    private val threadDao = db.chatThreadDao()
+    private val chatClient = ChatClient()
 
     private val _currentUser = MutableStateFlow(
         User(
@@ -37,7 +49,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             avatarInitials = "SP",
             avatarColorHex = 0xFF10B981,
             isOnline = true,
-            bio = "Pikiran jernih, komunikasi sederhana ☕"
+            bio = "Menggunakan AuraChat"
         )
     )
     val currentUser: StateFlow<User> = _currentUser.asStateFlow()
@@ -60,29 +72,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _messagesMap = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
     val messagesMap: StateFlow<Map<String, List<Message>>> = _messagesMap.asStateFlow()
 
-    private val _stories = MutableStateFlow<List<UserStory>>(emptyList())
-    val stories: StateFlow<List<UserStory>> = _stories.asStateFlow()
-
-    private val _contacts = MutableStateFlow<List<ContactItem>>(emptyList())
-    val contacts: StateFlow<List<ContactItem>> = _contacts.asStateFlow()
+    private val _onlineUsers = MutableStateFlow<List<String>>(emptyList())
+    val onlineUsers: StateFlow<List<String>> = _onlineUsers.asStateFlow()
 
     private val _replyingToMessage = MutableStateFlow<Message?>(null)
     val replyingToMessage: StateFlow<Message?> = _replyingToMessage.asStateFlow()
 
-    private val _isRecordingVoice = MutableStateFlow(false)
-    val isRecordingVoice: StateFlow<Boolean> = _isRecordingVoice.asStateFlow()
+    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    private val _currentlyPlayingAudioId = MutableStateFlow<String?>(null)
-    val currentlyPlayingAudioId: StateFlow<String?> = _currentlyPlayingAudioId.asStateFlow()
+    private val _connectionError = MutableStateFlow<String?>(null)
+    val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
+
+    private val _connectionMessage = MutableStateFlow<String?>(null)
+    val connectionMessage: StateFlow<String?> = _connectionMessage.asStateFlow()
+
+    private val colorPalette = listOf(
+        0xFFEC4899L, 0xFF3B82F6L, 0xFFF59E0BL,
+        0xFF10B981L, 0xFF8B5CF6L, 0xFF06B6D4L,
+        0xFFEF4444L, 0xFF6366F1L
+    )
 
     init {
-        checkSavedUserAndLoadData()
+        checkSavedUserAndSetupClient()
     }
 
-    private fun checkSavedUserAndLoadData() {
+    private fun checkSavedUserAndSetupClient() {
         val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
         val savedName = prefs.getString("user_name", null)
         val isFirstRun = prefs.getBoolean("is_first_run", true)
+        val savedIp = prefs.getString("server_ip", null)
+        val savedPort = prefs.getString("server_port", "9090")
 
         if (isFirstRun || savedName.isNullOrBlank()) {
             _currentScreen.value = Screen.WelcomeName
@@ -94,9 +114,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 username = handle,
                 avatarInitials = initials
             )
-            _currentScreen.value = Screen.ChatList
+            if (savedIp.isNullOrBlank()) {
+                _currentScreen.value = Screen.Connect
+            } else {
+                _currentScreen.value = Screen.Connect
+            }
         }
-        loadMockData()
+
+        setupChatClientCallbacks()
+    }
+
+    private fun setupChatClientCallbacks() {
+        chatClient.onConnected = {
+            _connectionState.value = ConnectionState.CONNECTED
+            _connectionMessage.value = "Terkoneksi ke server!"
+            _connectionError.value = null
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                _currentScreen.value = Screen.ChatList
+            }
+        }
+
+        chatClient.onDisconnected = {
+            if (_connectionState.value != ConnectionState.DISCONNECTED) {
+                _connectionState.value = ConnectionState.DISCONNECTED
+                _connectionMessage.value = "Koneksi terputus"
+            }
+        }
+
+        chatClient.onError = { error ->
+            _connectionError.value = error
+            _connectionState.value = ConnectionState.ERROR
+        }
+
+        chatClient.onMessageReceived = { rawMessage ->
+            parseServerMessage(rawMessage)
+        }
     }
 
     fun saveAndSetUserName(newName: String) {
@@ -119,15 +171,179 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .putBoolean("is_first_run", false)
             .apply()
 
-        _stories.update { list ->
-            list.map {
-                if (it.id == "s_0") it.copy(user = updatedUser) else it
+        if (_currentScreen.value is Screen.WelcomeName) {
+            _currentScreen.value = Screen.Connect
+        }
+    }
+
+    fun connectToServer(ip: String, port: String, name: String) {
+        if (name.isNotBlank() && name != _currentUser.value.name) {
+            val initials = getInitials(name)
+            val handle = "@" + name.lowercase().replace("\\s+".toRegex(), "")
+            _currentUser.value = _currentUser.value.copy(name = name, username = handle, avatarInitials = initials)
+
+            val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("user_name", name).apply()
+        }
+
+        val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("server_ip", ip)
+            .putString("server_port", port)
+            .apply()
+
+        _connectionState.value = ConnectionState.CONNECTING
+        _connectionError.value = null
+        chatClient.connect(ip, port.toIntOrNull() ?: 9090, _currentUser.value.name)
+    }
+
+    fun disconnectFromServer() {
+        chatClient.disconnect()
+        _connectionState.value = ConnectionState.DISCONNECTED
+        _onlineUsers.value = emptyList()
+    }
+
+    private fun parseServerMessage(raw: String) {
+        when {
+            raw.startsWith("[Sistem] User yang online:") -> {
+                val namesText = raw.substringAfter(": ").trim()
+                if (namesText.isNotBlank()) {
+                    val names = namesText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    _onlineUsers.value = names
+                    loadOnlineUsersAsContacts(names)
+                } else {
+                    _onlineUsers.value = emptyList()
+                }
+            }
+
+            raw.startsWith("[Sistem]") && raw.contains("bergabung") -> {
+                val name = raw.substringAfter("bergabung").trim().removePrefix("ke dalam obrolan.").trim()
+                if (name.isNotBlank() && name !in _onlineUsers.value) {
+                    _onlineUsers.value = _onlineUsers.value + name
+                }
+            }
+
+            raw.startsWith("[Sistem]") && raw.contains("keluar") -> {
+                val name = raw.substringAfter("keluar").trim().removePrefix("dari obrolan.").trim()
+                if (name.isNotBlank()) {
+                    _onlineUsers.value = _onlineUsers.value.filter { it != name }
+                }
+            }
+
+            raw.startsWith("[Private dari ") -> {
+                val senderName = raw.substringAfter("[Private dari ").substringBefore("]")
+                val text = raw.substringAfter("]: ").trim()
+                handleIncomingMessage(senderName, text, isPrivate = true)
+            }
+
+            raw.startsWith("[") && raw.contains("]:") -> {
+                val senderName = raw.substringAfter("[").substringBefore("]")
+                if (senderName == "Sistem") return
+                val text = raw.substringAfter("]: ").trim()
+                handleIncomingMessage(senderName, text)
+            }
+
+            else -> {
+                handleIncomingMessage("Server", raw)
+            }
+        }
+    }
+
+    private fun handleIncomingMessage(senderName: String, text: String, isPrivate: Boolean = false) {
+        val chatId = getChatIdForUser(senderName)
+        val now = System.currentTimeMillis()
+        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now))
+
+        val message = Message(
+            id = "msg_${now}_${senderName.hashCode()}",
+            chatId = chatId,
+            senderId = "user_${senderName.hashCode()}",
+            text = text,
+            timestamp = now,
+            formattedTime = timeStr,
+            status = MessageStatus.READ,
+            type = MessageType.TEXT
+        )
+
+        _messagesMap.update { map ->
+            val currentList = map[chatId] ?: emptyList()
+            map + (chatId to (currentList + message))
+        }
+
+        val partner = User(
+            id = "user_${senderName.hashCode()}",
+            name = senderName,
+            username = "@" + senderName.lowercase().replace("\\s+".toRegex(), ""),
+            avatarInitials = getInitials(senderName),
+            avatarColorHex = colorPalette[senderName.hashCode().and(0x7FFFFFFF) % colorPalette.size],
+            isOnline = true
+        )
+
+        val lastMsg = message
+        _chatThreads.update { threads ->
+            val existing = threads.find { it.id == chatId }
+            if (existing != null) {
+                threads.map {
+                    if (it.id == chatId) it.copy(
+                        lastMessage = lastMsg,
+                        unreadCount = it.unreadCount + 1
+                    ) else it
+                }
+            } else {
+                val newThread = ChatThread(
+                    id = chatId,
+                    partner = partner,
+                    lastMessage = lastMsg,
+                    unreadCount = 1
+                )
+                threads + newThread
             }
         }
 
-        if (_currentScreen.value is Screen.WelcomeName) {
-            _currentScreen.value = Screen.ChatList
+        viewModelScope.launch {
+            messageDao.insertMessage(message.toEntity(senderName, isPrivate))
+            val existingThread = threadDao.getThreadById(chatId)
+            if (existingThread != null) {
+                threadDao.updateLastMessage(chatId, text, now)
+                threadDao.updateUnreadCount(chatId, existingThread.unreadCount + 1)
+            } else {
+                threadDao.insertThread(
+                    com.example.data.ChatThreadEntity(
+                        id = chatId,
+                        partnerName = senderName,
+                        lastMessageText = text,
+                        lastMessageTime = now,
+                        unreadCount = 1
+                    )
+                )
+            }
         }
+    }
+
+    private fun loadOnlineUsersAsContacts(names: List<String>) {
+        val contacts = names.map { name ->
+            val color = colorPalette[name.hashCode().and(0x7FFFFFFF) % colorPalette.size]
+            ContactItem(
+                user = User(
+                    id = "user_${name.hashCode()}",
+                    name = name,
+                    username = "@" + name.lowercase().replace("\\s+".toRegex(), ""),
+                    avatarInitials = getInitials(name),
+                    avatarColorHex = color,
+                    isOnline = true
+                )
+            )
+        }
+        _chatThreads.value.forEach { thread ->
+            val updatedPartner = thread.partner.copy(isOnline = true)
+            _chatThreads.update { threads ->
+                threads.map { if (it.id == thread.id) it.copy(partner = updatedPartner) else it }
+            }
+        }
+    }
+
+    private fun getChatIdForUser(userName: String): String {
+        return "chat_${userName.hashCode()}"
     }
 
     private fun getInitials(name: String): String {
@@ -137,72 +353,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             parts.size == 1 -> parts[0].take(2).uppercase()
             else -> (parts[0].take(1) + parts[1].take(1)).uppercase()
         }
-    }
-
-    private fun loadMockData() {
-        val me = _currentUser.value
-        val userNadia = User("u_1", "Nadia Arisandi", "@nadia", "NA", 0xFFEC4899, true, "Online", "Desain UI/UX & Kopi Pagi 🎨")
-        val userRian = User("u_2", "Rian Hidayat", "@rianh", "RH", 0xFF3B82F6, true, "Online", "Building cool Android apps 🚀")
-        val userAulia = User("u_3", "Aulia Putri", "@aulia", "AP", 0xFFF59E0B, false, "Kemarin 21:15", "Membaca buku di akhir pekan 📚")
-        val userDevGroup = User("u_4", "Grup Tech Design ID", "@techgroup", "TD", 0xFF10B981, true, "12 Anggota", "Komunitas UX Indonesia")
-        val userDimas = User("u_5", "Dimas Anggara", "@dimas", "DA", 0xFF8B5CF6, false, "2 jam yang lalu", "Kopi & Koding ☕")
-        val userSiti = User("u_6", "Siti Rahma", "@siti", "SR", 0xFF06B6D4, true, "Online", "Desainer Grafis")
-
-        val storiesList = listOf(
-            UserStory("s_0", me, hasUnseen = false, timeAgo = "Status Saya"),
-            UserStory("s_1", userNadia, hasUnseen = true, timeAgo = "10m"),
-            UserStory("s_2", userRian, hasUnseen = true, timeAgo = "35m"),
-            UserStory("s_3", userSiti, hasUnseen = true, timeAgo = "1j"),
-            UserStory("s_4", userDimas, hasUnseen = false, timeAgo = "3j")
-        )
-
-        val nadiaMessages = listOf(
-            Message("m_1_1", "c_1", "u_1", "Halo ${me.name}! Gimana konsep UI dark mode untuk app chat ini? Pilihan warnanya nyaman di mata ga?", timestamp = 1700000000000, formattedTime = "09:30", status = MessageStatus.READ),
-            Message("m_1_2", "c_1", me.id, "Bagus banget Nadia! Menggunakan background slate dark (#0B0F17) dengan aksen emerald (#10B981). Kontrasnya lembut dan ramah OLED.", timestamp = 1700000050000, formattedTime = "09:31", status = MessageStatus.READ),
-            Message("m_1_3", "c_1", "u_1", "Dengar ini ya, ini preview audio penjelasan warna UI nya:", timestamp = 1700000100000, formattedTime = "09:32", status = MessageStatus.READ),
-            Message("m_1_4", "c_1", "u_1", "", timestamp = 1700000120000, formattedTime = "09:33", status = MessageStatus.READ, type = MessageType.VOICE, voiceDurationSeconds = 14),
-            Message("m_1_5", "c_1", me.id, "Keren banget! Transisi antar layernya juga terasa responsif dan elegan ✨", timestamp = 1700000200000, formattedTime = "09:35", status = MessageStatus.READ, reaction = "❤️")
-        )
-
-        val rianMessages = listOf(
-            Message("m_2_1", "c_2", "u_2", "Mas, prototype Compose UI udah ready buat direview nih.", timestamp = 1700000100000, formattedTime = "10:12", status = MessageStatus.READ),
-            Message("m_2_2", "c_2", me.id, "Siap Rian, performa animasi dan recomposition-nya smooth?", timestamp = 1700000150000, formattedTime = "10:14", status = MessageStatus.READ),
-            Message("m_2_3", "c_2", "u_2", "Sangat mulus! Kita pakai Material 3 tokens & state hoisted dengan sangat rapi.", timestamp = 1700000200000, formattedTime = "10:15", status = MessageStatus.READ)
-        )
-
-        val auliaMessages = listOf(
-            Message("m_3_1", "c_3", "u_3", "Besok jam 10 pagi meeting desain ya ${me.name}.", timestamp = 1700000000000, formattedTime = "Kemarin", status = MessageStatus.READ)
-        )
-
-        val groupMessages = listOf(
-            Message("m_4_1", "c_4", "u_6", "Halo semuanya, selamat datang di perancangan UI minimalis AuraChat!", timestamp = 1700000000000, formattedTime = "08:15", status = MessageStatus.READ),
-            Message("m_4_2", "c_4", "u_2", "Desain minimalis bikin mata engga cepat lelah pas pakai app malam hari 👍", timestamp = 1700000100000, formattedTime = "08:20", status = MessageStatus.READ)
-        )
-
-        val threads = listOf(
-            ChatThread("c_1", userNadia, nadiaMessages.last(), unreadCount = 0, isPinned = true, isMuted = false),
-            ChatThread("c_2", userRian, rianMessages.last(), unreadCount = 2, isPinned = true, isMuted = false),
-            ChatThread("c_4", userDevGroup, groupMessages.last(), unreadCount = 1, isPinned = false, isMuted = false, isGroup = true, groupName = "Grup Tech Design ID"),
-            ChatThread("c_3", userAulia, auliaMessages.last(), unreadCount = 0, isPinned = false, isMuted = true)
-        )
-
-        val contactsList = listOf(
-            ContactItem(userNadia, isFavorite = true),
-            ContactItem(userRian, isFavorite = true),
-            ContactItem(userSiti, isFavorite = true),
-            ContactItem(userAulia, isFavorite = false),
-            ContactItem(userDimas, isFavorite = false)
-        )
-
-        _stories.value = storiesList
-        _chatThreads.value = threads
-        _messagesMap.value = mapOf(
-            "c_1" to nadiaMessages,
-            "c_2" to rianMessages,
-            "c_3" to auliaMessages,
-            "c_4" to groupMessages
-        )
-        _contacts.value = contactsList
     }
 
     fun setSearchQuery(query: String) {
@@ -222,13 +372,48 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openChat(chatId: String) {
-        // Clear unread count for this thread
         _chatThreads.update { threads ->
             threads.map {
                 if (it.id == chatId) it.copy(unreadCount = 0) else it
             }
         }
         _currentScreen.value = Screen.ChatDetail(chatId)
+
+        viewModelScope.launch {
+            val thread = threadDao.getThreadById(chatId)
+            if (thread != null) {
+                threadDao.updateUnreadCount(chatId, 0)
+            }
+        }
+    }
+
+    fun openChatWithUser(userName: String) {
+        val chatId = getChatIdForUser(userName)
+        val existing = _chatThreads.value.find { it.id == chatId }
+        if (existing == null) {
+            val color = colorPalette[userName.hashCode().and(0x7FFFFFFF) % colorPalette.size]
+            val partner = User(
+                id = "user_${userName.hashCode()}",
+                name = userName,
+                username = "@" + userName.lowercase().replace("\\s+".toRegex(), ""),
+                avatarInitials = getInitials(userName),
+                avatarColorHex = color,
+                isOnline = true
+            )
+            val placeholderMsg = Message(
+                id = "placeholder_${chatId}",
+                chatId = chatId,
+                senderId = "system",
+                text = "Mulai percakapan dengan $userName",
+                timestamp = System.currentTimeMillis(),
+                formattedTime = "Baru saja",
+                status = MessageStatus.READ
+            )
+            _chatThreads.update { threads ->
+                threads + ChatThread(id = chatId, partner = partner, lastMessage = placeholderMsg)
+            }
+        }
+        openChat(chatId)
     }
 
     fun togglePinChat(chatId: String) {
@@ -255,13 +440,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (text.isBlank()) return
 
         val myUser = _currentUser.value
+        val now = System.currentTimeMillis()
+        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now))
+
         val newMsg = Message(
-            id = "msg_${System.currentTimeMillis()}",
+            id = "msg_${now}",
             chatId = chatId,
             senderId = myUser.id,
             text = text,
-            timestamp = System.currentTimeMillis(),
-            formattedTime = "Baru saja",
+            timestamp = now,
+            formattedTime = timeStr,
             status = MessageStatus.SENT,
             type = MessageType.TEXT,
             replyToText = _replyingToMessage.value?.text,
@@ -275,64 +463,41 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             map + (chatId to (currentList + newMsg))
         }
 
-        // Update thread last message
         _chatThreads.update { threads ->
             threads.map {
                 if (it.id == chatId) it.copy(lastMessage = newMsg) else it
             }
         }
 
-        // Simulate auto-reply after 1.5s for interactive demo
+        val thread = _chatThreads.value.find { it.id == chatId }
+        val partnerName = thread?.partner?.name
+        val serverMessage = if (partnerName != null) {
+            "@$partnerName $text"
+        } else {
+            text
+        }
+        chatClient.sendMessage(serverMessage)
+
         viewModelScope.launch {
-            delay(800)
-            _chatThreads.update { threads ->
-                threads.map { if (it.id == chatId) it.copy(isTyping = true) else it }
-            }
-            delay(1500)
-            _chatThreads.update { threads ->
-                threads.map { if (it.id == chatId) it.copy(isTyping = false) else it }
-            }
-
-            val replyTexts = listOf(
-                "Pesan diterima dengan jelas 👍!",
-                "Desain UI-nya keren dan responsif banget!",
-                "Sangat nyaman di mata pas mode gelap 🌙",
-                "Siap, terima kasih atas informasinya!"
-            )
-            val randomReply = replyTexts.random()
-
-            val partnerReply = Message(
-                id = "msg_reply_${System.currentTimeMillis()}",
-                chatId = chatId,
-                senderId = "u_1",
-                text = randomReply,
-                timestamp = System.currentTimeMillis(),
-                formattedTime = "Baru saja",
-                status = MessageStatus.READ,
-                type = MessageType.TEXT
-            )
-
-            _messagesMap.update { map ->
-                val currentList = map[chatId] ?: emptyList()
-                map + (chatId to (currentList + partnerReply))
-            }
-
-            _chatThreads.update { threads ->
-                threads.map {
-                    if (it.id == chatId) it.copy(lastMessage = partnerReply) else it
-                }
-            }
+            messageDao.insertMessage(newMsg.toEntity(myUser.name))
         }
     }
 
+    fun queryOnlineUsers() {
+        chatClient.sendMessage("/list")
+    }
+
     fun sendVoiceNote(chatId: String, durationSec: Int) {
+        val now = System.currentTimeMillis()
+        val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(now))
+
         val voiceMsg = Message(
-            id = "msg_voice_${System.currentTimeMillis()}",
+            id = "msg_voice_${now}",
             chatId = chatId,
             senderId = _currentUser.value.id,
             text = "",
-            timestamp = System.currentTimeMillis(),
-            formattedTime = "Baru saja",
+            timestamp = now,
+            formattedTime = timeStr,
             status = MessageStatus.SENT,
             type = MessageType.VOICE,
             voiceDurationSeconds = durationSec
@@ -363,7 +528,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleAudioPlayback(messageId: String) {
-        _currentlyPlayingAudioId.value = if (_currentlyPlayingAudioId.value == messageId) null else messageId
+    override fun onCleared() {
+        super.onCleared()
+        chatClient.destroy()
     }
 }

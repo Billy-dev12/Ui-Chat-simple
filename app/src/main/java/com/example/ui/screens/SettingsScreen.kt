@@ -20,6 +20,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Storage
@@ -62,6 +64,7 @@ fun SettingsScreen(
 ) {
     val currentUser by viewModel.currentUser.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
+    val connectionState by viewModel.connectionState.collectAsState()
 
     var enableNotifications by remember { mutableStateOf(true) }
     var enableBiometrics by remember { mutableStateOf(false) }
@@ -252,6 +255,82 @@ fun SettingsScreen(
                                 subtitle = "Mengikuti pengaturan otomatis HP",
                                 selected = themeMode == AppThemeMode.SYSTEM,
                                 onClick = { viewModel.setThemeMode(AppThemeMode.SYSTEM) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Server Connection Section
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = if (connectionState == com.example.network.ConnectionState.CONNECTED) Icons.Default.Link else Icons.Default.LinkOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "KONEKSI SERVER",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    if (connectionState == com.example.network.ConnectionState.CONNECTED) {
+                                        viewModel.disconnectFromServer()
+                                    }
+                                    viewModel.navigateTo(com.example.viewmodel.Screen.Connect)
+                                }
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (connectionState == com.example.network.ConnectionState.CONNECTED) Icons.Default.LinkOff else Icons.Default.Link,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (connectionState == com.example.network.ConnectionState.CONNECTED) "Putuskan Koneksi" else "Hubungkan ke Server",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = when (connectionState) {
+                                        com.example.network.ConnectionState.CONNECTED -> "Status: Terhubung"
+                                        com.example.network.ConnectionState.CONNECTING -> "Status: Menghubungkan..."
+                                        com.example.network.ConnectionState.ERROR -> "Status: Error"
+                                        else -> "Status: Terputus"
+                                    },
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }

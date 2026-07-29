@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -15,12 +16,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GroupAdd
-import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -39,9 +40,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.ContactItem
+import com.example.model.User
+import com.example.network.ConnectionState
 import com.example.ui.components.UserAvatar
 import com.example.viewmodel.ChatViewModel
 
@@ -51,26 +55,54 @@ fun ContactsScreen(
     viewModel: ChatViewModel,
     onOpenChatWithPartnerId: (String) -> Unit
 ) {
-    val contacts by viewModel.contacts.collectAsState()
-    val chatThreads by viewModel.chatThreads.collectAsState()
+    val onlineUsers by viewModel.onlineUsers.collectAsState()
+    val connectionState by viewModel.connectionState.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
 
-    val filteredContacts = contacts.filter {
-        it.user.name.contains(searchQuery, ignoreCase = true) ||
-                it.user.username.contains(searchQuery, ignoreCase = true)
-    }
+    val colorPalette = listOf(
+        0xFFEC4899L, 0xFF3B82F6L, 0xFFF59E0BL,
+        0xFF10B981L, 0xFF8B5CF6L, 0xFF06B6D4L,
+        0xFFEF4444L, 0xFF6366F1L
+    )
+
+    val contactItems = onlineUsers
+        .filter { it != currentUser.name }
+        .filter { it.contains(searchQuery, ignoreCase = true) }
+        .map { name ->
+            val color = colorPalette[name.hashCode().and(0x7FFFFFFF) % colorPalette.size]
+            ContactItem(
+                user = User(
+                    id = "user_${name.hashCode()}",
+                    name = name,
+                    username = "@" + name.lowercase().replace("\\s+".toRegex(), ""),
+                    avatarInitials = getInitials(name),
+                    avatarColorHex = color,
+                    isOnline = true
+                )
+            )
+        }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        text = "Kontak Saya",
+                        text = "Kontak",
                         fontWeight = FontWeight.Bold,
                         fontSize = 22.sp,
                         color = MaterialTheme.colorScheme.onBackground
                     )
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.queryOnlineUsers() }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh Online",
+                            tint = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
@@ -89,7 +121,7 @@ fun ContactsScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Cari kontak atau username...") },
+                    placeholder = { Text("Cari kontak...") },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Search,
@@ -111,33 +143,39 @@ fun ContactsScreen(
                 )
             }
 
-            // Quick Action Buttons
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    QuickContactAction(
-                        icon = Icons.Default.GroupAdd,
-                        title = "Buat Grup Baru",
-                        modifier = Modifier.weight(1f)
-                    ) {}
-                    QuickContactAction(
-                        icon = Icons.Default.PersonAdd,
-                        title = "Tambah Kontak",
-                        modifier = Modifier.weight(1f)
-                    ) {}
+            if (connectionState != ConnectionState.CONNECTED) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Belum Terhubung",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Hubungkan ke server terlebih dahulu untuk melihat kontak online.",
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-            }
-
-            // Favorites Header
-            val favorites = filteredContacts.filter { it.isFavorite }
-            if (favorites.isNotEmpty()) {
+            } else {
                 item {
                     Text(
-                        text = "FAVORIT",
+                        text = "ONLINE SEKARANG (${contactItems.size})",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp,
@@ -145,37 +183,34 @@ fun ContactsScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                     )
                 }
-                items(favorites) { contact ->
-                    ContactRowItem(contact = contact) {
-                        val thread = chatThreads.find { it.partner.id == contact.user.id }
-                        if (thread != null) {
-                            onOpenChatWithPartnerId(thread.id)
-                        } else {
-                            viewModel.openChat("c_1")
+
+                if (contactItems.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(48.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Tidak Ada Kontak Online",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Tekan tombol refresh untuk melihat siapa yang online.",
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                }
-            }
-
-            // All Contacts Header
-            item {
-                Text(
-                    text = "SEMUA KONTAK",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                )
-            }
-
-            items(filteredContacts) { contact ->
-                ContactRowItem(contact = contact) {
-                    val thread = chatThreads.find { it.partner.id == contact.user.id }
-                    if (thread != null) {
-                        onOpenChatWithPartnerId(thread.id)
-                    } else {
-                        viewModel.openChat("c_1")
+                } else {
+                    items(contactItems) { contact ->
+                        ContactRowItem(contact = contact) {
+                            viewModel.openChatWithUser(contact.user.name)
+                        }
                     }
                 }
             }
@@ -183,36 +218,12 @@ fun ContactsScreen(
     }
 }
 
-@Composable
-fun QuickContactAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = modifier.clickable { onClick() }
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = title,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = title,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
+private fun getInitials(name: String): String {
+    val parts = name.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }
+    return when {
+        parts.isEmpty() -> "U"
+        parts.size == 1 -> parts[0].take(2).uppercase()
+        else -> (parts[0].take(1) + parts[1].take(1)).uppercase()
     }
 }
 
@@ -243,17 +254,9 @@ fun ContactRowItem(
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Text(
-                    text = contact.user.bio,
+                    text = contact.user.username,
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (contact.isFavorite) {
-                Icon(
-                    imageVector = Icons.Default.Star,
-                    contentDescription = "Favorit",
-                    tint = Color(0xFFF59E0B),
-                    modifier = Modifier.size(18.dp)
                 )
             }
         }

@@ -61,7 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.ChatThread
 import com.example.model.MessageType
-import com.example.model.UserStory
+import com.example.network.ConnectionState
 import com.example.ui.components.UserAvatar
 import com.example.viewmodel.ChatViewModel
 
@@ -74,10 +74,11 @@ fun ChatListScreen(
     onOpenContacts: () -> Unit
 ) {
     val chatThreads by viewModel.chatThreads.collectAsState()
-    val stories by viewModel.stories.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectedFilter by viewModel.selectedFilter.collectAsState()
     val currentUser by viewModel.currentUser.collectAsState()
+    val connectionState by viewModel.connectionState.collectAsState()
+    val onlineUsers by viewModel.onlineUsers.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
@@ -123,6 +124,15 @@ fun ChatListScreen(
                         }
                     },
                     actions = {
+                        if (connectionState == ConnectionState.CONNECTED) {
+                            IconButton(onClick = { viewModel.queryOnlineUsers() }) {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = "Refresh Online",
+                                    tint = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                        }
                         IconButton(onClick = { isSearchActive = !isSearchActive }) {
                             Icon(
                                 imageVector = if (isSearchActive) Icons.Default.Clear else Icons.Default.Search,
@@ -236,29 +246,63 @@ fun ChatListScreen(
                 .padding(innerPadding),
             contentPadding = PaddingValues(bottom = 80.dp)
         ) {
-            // Horizontal Active Status / Story section
+            // Online Users / Active section
             item {
                 Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                    val statusText = if (connectionState == ConnectionState.CONNECTED) {
+                        "ONLINE (${onlineUsers.size})"
+                    } else {
+                        "OFFLINE"
+                    }
                     Text(
-                        text = "AKTIF SEKARANG",
+                        text = statusText,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                     )
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        items(stories) { story ->
-                            StoryBubbleItem(story = story, onClick = {
-                                if (story.user.id != currentUser.id) {
-                                    val matchThread = chatThreads.find { it.partner.id == story.user.id }
-                                    if (matchThread != null) onOpenChat(matchThread.id)
-                                }
-                            })
+                    if (connectionState == ConnectionState.CONNECTED && onlineUsers.isNotEmpty()) {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            items(onlineUsers.filter { it != currentUser.name }) { userName ->
+                                val colorPalette = listOf(
+                                    0xFFEC4899L, 0xFF3B82F6L, 0xFFF59E0BL,
+                                    0xFF10B981L, 0xFF8B5CF6L, 0xFF06B6D4L
+                                )
+                                val color = colorPalette[userName.hashCode().and(0x7FFFFFFF) % colorPalette.size]
+                                val user = com.example.model.User(
+                                    id = "user_${userName.hashCode()}",
+                                    name = userName,
+                                    username = "@" + userName.lowercase().replace("\\s+".toRegex(), ""),
+                                    avatarInitials = userName.trim().split("\\s+".toRegex()).let {
+                                        if (it.size >= 2) (it[0].take(1) + it[1].take(1)).uppercase()
+                                        else userName.take(2).uppercase()
+                                    },
+                                    avatarColorHex = color,
+                                    isOnline = true
+                                )
+                                OnlineUserBubble(user = user, onClick = {
+                                    viewModel.openChatWithUser(userName)
+                                })
+                            }
                         }
+                    } else if (connectionState == ConnectionState.CONNECTED) {
+                        Text(
+                            text = "Tidak ada pengguna online lainnya.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    } else {
+                        Text(
+                            text = "Belum terhubung ke server.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
                     }
                 }
             }
@@ -302,8 +346,8 @@ fun ChatListScreen(
 }
 
 @Composable
-fun StoryBubbleItem(
-    story: UserStory,
+fun OnlineUserBubble(
+    user: com.example.model.User,
     onClick: () -> Unit
 ) {
     Column(
@@ -313,14 +357,13 @@ fun StoryBubbleItem(
             .width(62.dp)
     ) {
         UserAvatar(
-            user = story.user,
+            user = user,
             size = 54.dp,
-            showOnlineStatus = true,
-            hasStoryRing = story.hasUnseen
+            showOnlineStatus = true
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = if (story.user.id == "user_me") "Status Saya" else story.user.name.split(" ").firstOrNull() ?: "",
+            text = user.name.split(" ").firstOrNull() ?: "",
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
