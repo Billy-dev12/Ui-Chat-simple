@@ -23,9 +23,11 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
@@ -33,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -57,11 +60,64 @@ import com.example.viewmodel.ChatViewModel
 fun SettingsScreen(
     viewModel: ChatViewModel
 ) {
-    val currentUser = viewModel.currentUser
+    val currentUser by viewModel.currentUser.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
 
     var enableNotifications by remember { mutableStateOf(true) }
     var enableBiometrics by remember { mutableStateOf(false) }
+
+    var showEditNameDialog by remember { mutableStateOf(false) }
+    var editedNameInput by remember { mutableStateOf("") }
+
+    if (showEditNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNameDialog = false },
+            title = {
+                Text(
+                    text = "Ubah Nama Profil",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Nama ini akan disimpan secara lokal di HP Anda dan ditampilkan pada setiap obrolan.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = editedNameInput,
+                        onValueChange = { editedNameInput = it },
+                        label = { Text("Nama Baru") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (editedNameInput.trim().isNotBlank()) {
+                            viewModel.saveAndSetUserName(editedNameInput.trim())
+                            showEditNameDialog = false
+                        }
+                    }
+                ) {
+                    Text("Simpan", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditNameDialog = false }) {
+                    Text("Batal")
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -95,6 +151,10 @@ fun SettingsScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clickable {
+                            editedNameInput = currentUser.name
+                            showEditNameDialog = true
+                        }
                 ) {
                     Row(
                         modifier = Modifier.padding(16.dp),

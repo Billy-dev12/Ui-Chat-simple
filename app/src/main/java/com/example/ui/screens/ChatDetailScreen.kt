@@ -78,6 +78,7 @@ fun ChatDetailScreen(
     val messagesMap by viewModel.messagesMap.collectAsState()
     val replyingToMessage by viewModel.replyingToMessage.collectAsState()
     val currentlyPlayingAudioId by viewModel.currentlyPlayingAudioId.collectAsState()
+    val currentUser by viewModel.currentUser.collectAsState()
 
     val thread = chatThreads.find { it.id == chatId } ?: return
     val messages = messagesMap[chatId] ?: emptyList()
@@ -197,7 +198,7 @@ fun ChatDetailScreen(
                     items(messages, key = { it.id }) { msg ->
                         MessageBubbleItem(
                             message = msg,
-                            isMe = msg.senderId == viewModel.currentUser.id,
+                            isMe = msg.senderId == currentUser.id,
                             isPlayingAudio = currentlyPlayingAudioId == msg.id,
                             onPlayAudioToggle = { viewModel.toggleAudioPlayback(msg.id) },
                             onLongClick = {

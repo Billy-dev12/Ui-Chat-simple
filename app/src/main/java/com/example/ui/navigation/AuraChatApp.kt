@@ -37,6 +37,7 @@ import com.example.ui.screens.ChatDetailScreen
 import com.example.ui.screens.ChatListScreen
 import com.example.ui.screens.ContactsScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.WelcomeNameScreen
 import com.example.ui.theme.AuraChatTheme
 import com.example.viewmodel.ChatViewModel
 import com.example.viewmodel.Screen
@@ -50,7 +51,7 @@ fun AuraChatApp(viewModel: ChatViewModel) {
     val totalUnread = chatThreads.sumOf { it.unreadCount }
 
     AuraChatTheme(themeMode = themeMode) {
-        val showBottomNav = currentScreen !is Screen.ChatDetail
+        val showBottomNav = currentScreen !is Screen.ChatDetail && currentScreen !is Screen.WelcomeName
 
         Scaffold(
             bottomBar = {
@@ -165,6 +166,14 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                     label = "screen_transition"
                 ) { screen ->
                     when (screen) {
+                        is Screen.WelcomeName -> {
+                            WelcomeNameScreen(
+                                onNameEntered = { newName ->
+                                    viewModel.saveAndSetUserName(newName)
+                                }
+                            )
+                        }
+
                         is Screen.ChatList -> {
                             ChatListScreen(
                                 viewModel = viewModel,
