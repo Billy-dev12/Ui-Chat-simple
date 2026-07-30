@@ -61,6 +61,12 @@ fun ContactsScreen(
 
     var searchQuery by remember { mutableStateOf("") }
 
+    androidx.compose.runtime.LaunchedEffect(connectionState) {
+        if (connectionState == ConnectionState.CONNECTED) {
+            viewModel.queryOnlineUsers()
+        }
+    }
+
     val colorPalette = listOf(
         0xFFEC4899L, 0xFF3B82F6L, 0xFFF59E0BL,
         0xFF10B981L, 0xFF8B5CF6L, 0xFF06B6D4L,

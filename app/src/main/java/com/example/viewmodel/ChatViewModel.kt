@@ -16,7 +16,9 @@ import com.example.model.User
 import com.example.network.ChatClient
 import com.example.network.ConnectionState
 import com.example.ui.theme.AppThemeMode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -75,6 +77,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _onlineUsers = MutableStateFlow<List<String>>(emptyList())
     val onlineUsers: StateFlow<List<String>> = _onlineUsers.asStateFlow()
 
+    private val _currentlyPlayingAudioId = MutableStateFlow<String?>(null)
+    val currentlyPlayingAudioId: StateFlow<String?> = _currentlyPlayingAudioId.asStateFlow()
+
     private val _replyingToMessage = MutableStateFlow<Message?>(null)
     val replyingToMessage: StateFlow<Message?> = _replyingToMessage.asStateFlow()
 
@@ -86,6 +91,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _connectionMessage = MutableStateFlow<String?>(null)
     val connectionMessage: StateFlow<String?> = _connectionMessage.asStateFlow()
+
+    private val _savedIp = MutableStateFlow<String?>(null)
+    val savedIp: StateFlow<String?> = _savedIp.asStateFlow()
+
+    private val _savedPort = MutableStateFlow("9090")
+    val savedPort: StateFlow<String> = _savedPort.asStateFlow()
 
     private val colorPalette = listOf(
         0xFFEC4899L, 0xFF3B82F6L, 0xFFF59E0BL,
@@ -101,8 +112,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
         val savedName = prefs.getString("user_name", null)
         val isFirstRun = prefs.getBoolean("is_first_run", true)
-        val savedIp = prefs.getString("server_ip", null)
-        val savedPort = prefs.getString("server_port", "9090")
+        val ip = prefs.getString("server_ip", null)
+        val port = prefs.getString("server_port", "9090") ?: "9090"
+
+        _savedIp.value = ip
+        _savedPort.value = port
+
+        setupChatClientCallbacks()
 
         if (isFirstRun || savedName.isNullOrBlank()) {
             _currentScreen.value = Screen.WelcomeName
@@ -114,27 +130,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 username = handle,
                 avatarInitials = initials
             )
-            if (savedIp.isNullOrBlank()) {
-                _currentScreen.value = Screen.Connect
+
+            if (!ip.isNullOrBlank()) {
+                // Pre-navigate to ChatList and auto-connect to stored IP/Port
+                _currentScreen.value = Screen.ChatList
+                connectToServer(ip, port, savedName)
             } else {
                 _currentScreen.value = Screen.Connect
             }
         }
-
-        setupChatClientCallbacks()
     }
+
+    private var pollingJob: kotlinx.coroutines.Job? = null
 
     private fun setupChatClientCallbacks() {
         chatClient.onConnected = {
             _connectionState.value = ConnectionState.CONNECTED
             _connectionMessage.value = "Terkoneksi ke server!"
             _connectionError.value = null
-            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                _currentScreen.value = Screen.ChatList
-            }
+            queryOnlineUsers()
+            startOnlineUsersPolling()
         }
 
         chatClient.onDisconnected = {
+            pollingJob?.cancel()
             if (_connectionState.value != ConnectionState.DISCONNECTED) {
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _connectionMessage.value = "Koneksi terputus"
@@ -142,12 +161,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         chatClient.onError = { error ->
+            pollingJob?.cancel()
             _connectionError.value = error
             _connectionState.value = ConnectionState.ERROR
         }
 
         chatClient.onMessageReceived = { rawMessage ->
             parseServerMessage(rawMessage)
+        }
+    }
+
+    private fun startOnlineUsersPolling() {
+        pollingJob?.cancel()
+        pollingJob = viewModelScope.launch {
+            while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
+                queryOnlineUsers()
+                delay(8000) // Poll /list every 8 seconds
+            }
         }
     }
 
@@ -172,29 +202,53 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             .apply()
 
         if (_currentScreen.value is Screen.WelcomeName) {
-            _currentScreen.value = Screen.Connect
+            val ip = _savedIp.value
+            if (!ip.isNullOrBlank()) {
+                _currentScreen.value = Screen.ChatList
+                connectToServer(ip, _savedPort.value, trimmed)
+            } else {
+                _currentScreen.value = Screen.Connect
+            }
         }
     }
 
     fun connectToServer(ip: String, port: String, name: String) {
-        if (name.isNotBlank() && name != _currentUser.value.name) {
-            val initials = getInitials(name)
-            val handle = "@" + name.lowercase().replace("\\s+".toRegex(), "")
-            _currentUser.value = _currentUser.value.copy(name = name, username = handle, avatarInitials = initials)
+        val trimmedIp = ip.trim()
+        val trimmedPort = port.trim()
+        val trimmedName = name.trim()
+
+        if (trimmedName.isNotBlank() && trimmedName != _currentUser.value.name) {
+            val initials = getInitials(trimmedName)
+            val handle = "@" + trimmedName.lowercase().replace("\\s+".toRegex(), "")
+            _currentUser.value = _currentUser.value.copy(name = trimmedName, username = handle, avatarInitials = initials)
 
             val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
-            prefs.edit().putString("user_name", name).apply()
+            prefs.edit().putString("user_name", trimmedName).apply()
         }
+
+        _savedIp.value = trimmedIp
+        _savedPort.value = trimmedPort
 
         val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
         prefs.edit()
-            .putString("server_ip", ip)
-            .putString("server_port", port)
+            .putString("server_ip", trimmedIp)
+            .putString("server_port", trimmedPort)
             .apply()
 
         _connectionState.value = ConnectionState.CONNECTING
         _connectionError.value = null
-        chatClient.connect(ip, port.toIntOrNull() ?: 9090, _currentUser.value.name)
+        chatClient.connect(trimmedIp, trimmedPort.toIntOrNull() ?: 9090, _currentUser.value.name)
+    }
+
+    fun retryConnection() {
+        val ip = _savedIp.value
+        val port = _savedPort.value
+        val name = _currentUser.value.name
+        if (!ip.isNullOrBlank()) {
+            connectToServer(ip, port, name)
+        } else {
+            _currentScreen.value = Screen.Connect
+        }
     }
 
     fun disconnectFromServer() {
@@ -204,47 +258,61 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun parseServerMessage(raw: String) {
+        val trimmed = raw.trim()
         when {
-            raw.startsWith("[Sistem] User yang online:") -> {
-                val namesText = raw.substringAfter(": ").trim()
+            trimmed.contains("User yang online:") -> {
+                val namesText = trimmed.substringAfter("User yang online:").trim()
                 if (namesText.isNotBlank()) {
                     val names = namesText.split(",").map { it.trim() }.filter { it.isNotBlank() }
                     _onlineUsers.value = names
                     loadOnlineUsersAsContacts(names)
                 } else {
                     _onlineUsers.value = emptyList()
+                    loadOnlineUsersAsContacts(emptyList())
                 }
             }
 
-            raw.startsWith("[Sistem]") && raw.contains("bergabung") -> {
-                val name = raw.substringAfter("bergabung").trim().removePrefix("ke dalam obrolan.").trim()
+            trimmed.startsWith("[Sistem]") && trimmed.contains("bergabung") -> {
+                val name = trimmed.substringAfter("[Sistem]").substringBefore("bergabung").trim()
                 if (name.isNotBlank() && name !in _onlineUsers.value) {
                     _onlineUsers.value = _onlineUsers.value + name
+                    loadOnlineUsersAsContacts(_onlineUsers.value)
                 }
+                queryOnlineUsers()
             }
 
-            raw.startsWith("[Sistem]") && raw.contains("keluar") -> {
-                val name = raw.substringAfter("keluar").trim().removePrefix("dari obrolan.").trim()
+            trimmed.startsWith("[Sistem]") && trimmed.contains("keluar") -> {
+                val name = trimmed.substringAfter("[Sistem]").substringBefore("keluar").trim()
                 if (name.isNotBlank()) {
                     _onlineUsers.value = _onlineUsers.value.filter { it != name }
+                    loadOnlineUsersAsContacts(_onlineUsers.value)
                 }
+                queryOnlineUsers()
             }
 
-            raw.startsWith("[Private dari ") -> {
-                val senderName = raw.substringAfter("[Private dari ").substringBefore("]")
-                val text = raw.substringAfter("]: ").trim()
+            trimmed.startsWith("[Private dari ") -> {
+                val senderName = trimmed.substringAfter("[Private dari ").substringBefore("]")
+                val text = trimmed.substringAfter("]: ").trim()
                 handleIncomingMessage(senderName, text, isPrivate = true)
             }
 
-            raw.startsWith("[") && raw.contains("]:") -> {
-                val senderName = raw.substringAfter("[").substringBefore("]")
-                if (senderName == "Sistem") return
-                val text = raw.substringAfter("]: ").trim()
+            trimmed.startsWith("[") && trimmed.contains("]:") -> {
+                val senderName = trimmed.substringAfter("[").substringBefore("]")
+                if (senderName == "Sistem") {
+                    val systemNotice = trimmed.substringAfter("]: ").trim()
+                    _connectionMessage.value = systemNotice
+                    return
+                }
+                val text = trimmed.substringAfter("]: ").trim()
                 handleIncomingMessage(senderName, text)
             }
 
+            trimmed.startsWith("Selamat datang") -> {
+                queryOnlineUsers()
+            }
+
             else -> {
-                handleIncomingMessage("Server", raw)
+                // Ignore general unformatted server welcome banners
             }
         }
     }
@@ -526,6 +594,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             map + (chatId to updated)
         }
+    }
+
+    fun toggleAudioPlayback(messageId: String) {
+        _currentlyPlayingAudioId.value = if (_currentlyPlayingAudioId.value == messageId) null else messageId
     }
 
     override fun onCleared() {

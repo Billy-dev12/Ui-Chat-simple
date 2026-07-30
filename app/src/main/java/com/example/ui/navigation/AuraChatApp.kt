@@ -181,9 +181,13 @@ fun AuraChatApp(viewModel: ChatViewModel) {
 
                         is Screen.Connect -> {
                             val savedName = viewModel.currentUser.collectAsState().value.name
+                            val savedIp by viewModel.savedIp.collectAsState()
+                            val savedPort by viewModel.savedPort.collectAsState()
                             ConnectScreen(
                                 connectionState = connectionState,
                                 savedName = savedName,
+                                savedIp = savedIp,
+                                savedPort = savedPort,
                                 onConnect = { ip, port, name ->
                                     viewModel.connectToServer(ip, port, name)
                                 },

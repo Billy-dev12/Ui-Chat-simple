@@ -54,11 +54,13 @@ import com.example.network.ConnectionState
 fun ConnectScreen(
     connectionState: ConnectionState,
     savedName: String,
+    savedIp: String?,
+    savedPort: String,
     onConnect: (ip: String, port: String, name: String) -> Unit,
     errorMessage: String?
 ) {
-    var ipInput by remember { mutableStateOf("") }
-    var portInput by remember { mutableStateOf("9090") }
+    var ipInput by remember { mutableStateOf(savedIp ?: "") }
+    var portInput by remember { mutableStateOf(savedPort.ifBlank { "9090" }) }
     var nameInput by remember { mutableStateOf(savedName) }
     var isVisible by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
@@ -66,8 +68,10 @@ fun ConnectScreen(
 
     LaunchedEffect(Unit) { isVisible = true }
 
-    LaunchedEffect(savedName) {
+    LaunchedEffect(savedName, savedIp, savedPort) {
         if (nameInput.isBlank()) nameInput = savedName
+        if (ipInput.isBlank() && !savedIp.isNullOrBlank()) ipInput = savedIp
+        if (portInput.isBlank() && savedPort.isNotBlank()) portInput = savedPort
     }
 
     Box(
