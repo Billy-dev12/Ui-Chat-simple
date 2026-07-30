@@ -16,7 +16,6 @@ import com.example.model.User
 import com.example.network.ChatClient
 import com.example.network.ConnectionState
 import com.example.ui.theme.AppThemeMode
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
@@ -141,19 +140,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private var pollingJob: kotlinx.coroutines.Job? = null
-
     private fun setupChatClientCallbacks() {
         chatClient.onConnected = {
             _connectionState.value = ConnectionState.CONNECTED
             _connectionMessage.value = "Terkoneksi ke server!"
             _connectionError.value = null
-            queryOnlineUsers()
-            startOnlineUsersPolling()
         }
 
         chatClient.onDisconnected = {
-            pollingJob?.cancel()
             if (_connectionState.value != ConnectionState.DISCONNECTED) {
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _connectionMessage.value = "Koneksi terputus"
@@ -161,23 +155,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         chatClient.onError = { error ->
-            pollingJob?.cancel()
             _connectionError.value = error
             _connectionState.value = ConnectionState.ERROR
         }
 
         chatClient.onMessageReceived = { rawMessage ->
             parseServerMessage(rawMessage)
-        }
-    }
-
-    private fun startOnlineUsersPolling() {
-        pollingJob?.cancel()
-        pollingJob = viewModelScope.launch {
-            while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
-                queryOnlineUsers()
-                delay(8000) // Poll /list every 8 seconds
-            }
         }
     }
 
@@ -260,6 +243,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun parseServerMessage(raw: String) {
         val trimmed = raw.trim()
         when {
+            // [Sistem] User yang online: Billy, Rian, Nadia
             trimmed.contains("User yang online:") -> {
                 val namesText = trimmed.substringAfter("User yang online:").trim()
                 if (namesText.isNotBlank()) {
@@ -272,16 +256,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            trimmed.startsWith("[Sistem]") && trimmed.contains("bergabung") -> {
+            // [Sistem] Nama bergabung.
+            trimmed.contains("bergabung") -> {
                 val name = trimmed.substringAfter("[Sistem]").substringBefore("bergabung").trim()
                 if (name.isNotBlank() && name !in _onlineUsers.value) {
                     _onlineUsers.value = _onlineUsers.value + name
                     loadOnlineUsersAsContacts(_onlineUsers.value)
                 }
+                // Minta update daftar online terbaru
                 queryOnlineUsers()
             }
 
-            trimmed.startsWith("[Sistem]") && trimmed.contains("keluar") -> {
+            // [Sistem] Nama keluar.
+            trimmed.contains("keluar") -> {
                 val name = trimmed.substringAfter("[Sistem]").substringBefore("keluar").trim()
                 if (name.isNotBlank()) {
                     _onlineUsers.value = _onlineUsers.value.filter { it != name }
@@ -290,29 +277,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 queryOnlineUsers()
             }
 
+            // [Private dari Nama]: pesan
             trimmed.startsWith("[Private dari ") -> {
                 val senderName = trimmed.substringAfter("[Private dari ").substringBefore("]")
                 val text = trimmed.substringAfter("]: ").trim()
                 handleIncomingMessage(senderName, text, isPrivate = true)
             }
 
+            // [Nama]: pesan (broadcast)
             trimmed.startsWith("[") && trimmed.contains("]:") -> {
                 val senderName = trimmed.substringAfter("[").substringBefore("]")
                 if (senderName == "Sistem") {
-                    val systemNotice = trimmed.substringAfter("]: ").trim()
-                    _connectionMessage.value = systemNotice
+                    // Pesan sistem lainnya
+                    val systemMsg = trimmed.substringAfter("]: ").trim()
+                    _connectionMessage.value = systemMsg
                     return
                 }
                 val text = trimmed.substringAfter("]: ").trim()
                 handleIncomingMessage(senderName, text)
             }
 
-            trimmed.startsWith("Selamat datang") -> {
-                queryOnlineUsers()
+            // [Sistem] Selamat datang, Nama!
+            trimmed.startsWith("[Sistem]") && trimmed.contains("Selamat datang") -> {
+                // Welcome message diterima, tidak perlu action tambahan
+                // Karena server akan langsung kirim daftar online berikutnya
             }
 
             else -> {
-                // Ignore general unformatted server welcome banners
+                // Abaikan pesan lain
             }
         }
     }

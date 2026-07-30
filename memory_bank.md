@@ -7,25 +7,37 @@
 
 ## 🔄 Alur Integrasi Python Socket Server & Persistence
 
-1. **Auto Server Connection (`ChatClient.kt`)**:
-   - `savedIp` dan `savedPort` disimpan di `SharedPreferences` (`aurachat_prefs`).
-   - Saat aplikasi dibuka (`init` di `ChatViewModel`), jika IP server tersimpan, aplikasi langsung berpindah ke `ChatList` dan secara otomatis menghubungkan socket ke server Python di latar belakang.
-   - Apabila koneksi gagal atau terputus, muncul banner interaktif di layar utama `ChatListScreen` yang memberi tahu pengguna lengkap dengan tombol *Coba Lagi* dan *Ganti IP Server*.
+1. **Koneksi ke Server (`ChatClient.kt`)**:
+   - User masukkan IP server, port, dan nama di `ConnectScreen`.
+   - IP dan port disimpan di `SharedPreferences` (`aurachat_prefs`).
+   - `ChatClient.kt` buka `java.net.Socket` ke Python server, kirim nama user.
+   - Setelah terkoneksi, server otomatis kirim daftar online ke client baru.
 
-2. **Sinkronisasi Pengguna Online (`/list` Polling & Events)**:
-   - ViewModel menjalankan coroutine polling (setiap 8 detik) yang mengirim perintah `/list` ke server Python.
-   - Parsing respons server `[Sistem] User yang online: ...` memperbarui daftar `onlineUsers` secara reaktif.
-   - Notifikasi `[Sistem] ... bergabung ke dalam obrolan` dan `[Sistem] ... keluar dari obrolan` langsung memperbarui daftar pengguna online.
-   - Layar *ContactsScreen* otomatis memicu `queryOnlineUsers()` begitu dibuka untuk memastikan daftar kontak online selalu segar.
+2. **Synchronisasi User Online**:
+   - Server **otomatis kirim** `[Sistem] User yang online: ...` saat:
+     - User baru join (setelah welcome message)
+     - User lain join/leave (broadcast ke semua client)
+   - Android app **parse** format tersebut dan update `_onlineUsers` StateFlow.
+   - User bisa manual refresh via tombol `/list` di UI.
 
-3. **Format Protokol Pesan Python (`server.py`)**:
-   - **Pesan Broadcast**: Ditampilkan dari format `[Nama]: pesan`.
-   - **Pesan Private**: Menggunakan syntax `@nama_tujuan pesan`, dikirim server dalam format `[Private dari Nama]: pesan`.
-   - **Command Sistem**: `/list` untuk daftar online.
+3. **Format Protokol Server → Android**:
+   | Server Output | Android Action |
+   |---------------|----------------|
+   | `[Sistem] Selamat datang, Nama!` | Welcome message, tidak perlu action |
+   | `[Sistem] User yang online: A, B, C` | Update `_onlineUsers` StateFlow |
+   | `[Sistem] Nama bergabung.` | Tambah ke onlineUsers, query `/list` |
+   | `[Sistem] Nama keluar.` | Hapus dari onlineUsers, query `/list` |
+   | `[Private dari Nama]: pesan` | Buat/update ChatThread + Message |
+   | `[Nama]: pesan` | Buat/update ChatThread + Message |
 
-4. **Penyimpanan Lokal Room Database**:
-   - `ChatDatabase.kt`, `ChatThreadDao.kt`, `MessageDao.kt`, `ChatThreadEntity.kt`, `MessageEntity.kt`.
-   - Semua pesan dan obrolan tersimpan secara permanen di database SQLite lokal sehingga riwayat chat dapat dibaca kapan saja meski dalam keadaan offline.
+4. **Kirim Pesan dari Android**:
+   - Private: `@NamaPenerima pesan`
+   - Broadcast: `pesan langsung`
+   - Query online: `/list`
+
+5. **Penyimpanan Lokal Room Database**:
+   - `ChatDatabase.kt`, `ChatThreadDao.kt`, `MessageDao.kt`
+   - Semua pesan tersimpan di SQLite lokal.
 
 ---
 
@@ -33,36 +45,33 @@
 
 ```text
 app/src/main/java/com/example/
-├── MainActivity.kt                      # Entry point aktivitas Android
-├── model/                               # Data Models (User, ChatThread, Message, Story, dll.)
-│   └── ChatModels.kt
-├── data/                                # Room Database Engine (SQLite)
-│   ├── ChatDatabase.kt                  # Room Database Instance
-│   ├── ChatThreadEntity.kt              # Entitas Tabel Thread Obrolan
-│   ├── MessageEntity.kt                 # Entitas Tabel Pesan
-│   ├── ChatThreadDao.kt                 # Data Access Object untuk Thread
-│   └── MessageDao.kt                    # Data Access Object untuk Pesan
-├── network/                             # Socket Networking Engine
-│   └── ChatClient.kt                    # Client Socket TCP Kotlin
-├── viewmodel/                           # State Management & Controller Logic
-│   └── ChatViewModel.kt                 # ViewModel utama mengelola Socket, Room DB, & StateFlow
+├── MainActivity.kt
+├── model/
+│   └── ChatModels.kt              # User, Message, ChatThread, etc.
+├── data/
+│   ├── ChatDatabase.kt            # Room Database Singleton
+│   ├── ChatThreadEntity.kt        # Entity Thread
+│   ├── MessageEntity.kt           # Entity Pesan
+│   ├── ChatThreadDao.kt           # DAO Thread
+│   └── MessageDao.kt              # DAO Pesan
+├── network/
+│   └── ChatClient.kt              # TCP Socket Client
+├── viewmodel/
+│   └── ChatViewModel.kt           # MVVM ViewModel
 ├── ui/
-│   ├── theme/                           # System Theme & Color Palette
-│   │   ├── Color.kt                     # Minimal Dark Slate & OLED Theme Colors
-│   │   ├── Theme.kt                     # AuraChatTheme Wrapper
-│   │   └── Type.kt                      # Typography
-│   ├── components/                      # Reusable Components
-│   │   ├── Avatar.kt                    # User Avatar dengan Inisial & Status Online
-│   │   └── ChatBubbles.kt               # Gelembung Pesan Text & Voice Note
-│   ├── screens/                         # Composables Layar Utama
-│   │   ├── WelcomeNameScreen.kt         # Layar Sambutan & Input Nama Pertama Kali
-│   │   ├── ConnectScreen.kt             # Form Input IP & Port Server Python
-│   │   ├── ChatListScreen.kt            # Daftar Obrolan, Banner Koneksi, & Stories
-│   │   ├── ChatDetailScreen.kt          # Detail Ruang Chat, Voice Note, & Input Pesan
-│   │   ├── ContactsScreen.kt            # Daftar Kontak Pengguna Online (Real-time `/list`)
-│   │   └── SettingsScreen.kt            # Pengaturan Tema, Server IP, & Custom Nama Profil
+│   ├── theme/
+│   ├── components/
+│   │   ├── Avatar.kt
+│   │   └── ChatBubbles.kt
+│   ├── screens/
+│   │   ├── WelcomeNameScreen.kt
+│   │   ├── ConnectScreen.kt       # Input IP + Port + Nama
+│   │   ├── ChatListScreen.kt      # Daftar Chat + Online Users
+│   │   ├── ChatDetailScreen.kt    # Room Chat
+│   │   ├── ContactsScreen.kt      # User Online
+│   │   └── SettingsScreen.kt      # Tema + Disconnect
 │   └── navigation/
-│       └── AuraChatApp.kt               # Scaffold Utama, Bottom Navigation, & Transitions
+│       └── AuraChatApp.kt
 ```
 
 ---
@@ -71,7 +80,5 @@ app/src/main/java/com/example/
 - **Bahasa**: Kotlin 100%
 - **UI Framework**: Jetpack Compose (Material 3)
 - **Networking**: Raw Java Socket (`java.net.Socket`)
-- **Local Persistence**: Room Database (SQLite) + Android `SharedPreferences`
-- **Arsitektur**: MVVM (Model-View-ViewModel) + `StateFlow` + Kotlin Coroutines
-- **Desain & Tema**: Slate Minimalist Dark Mode, Pure OLED Mode, & Clean Light Mode
-
+- **Local Persistence**: Room Database (SQLite) + SharedPreferences
+- **Arsitektur**: MVVM + StateFlow + Kotlin Coroutines
