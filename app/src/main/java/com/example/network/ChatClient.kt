@@ -43,7 +43,7 @@ class ChatClient {
                 socket = Socket(host, port).apply {
                     soTimeout = 0
                 }
-                reader = BufferedReader(InputStreamReader(socket!!.getInputStream()))
+                val inputStream = socket!!.getInputStream()
                 writer = PrintWriter(socket!!.getOutputStream(), true)
 
                 writer!!.println(userName)
@@ -51,12 +51,39 @@ class ChatClient {
                 _connectionState.value = ConnectionState.CONNECTED
                 onConnected?.invoke()
 
-                while (!socket!!.isClosed) {
-                    try {
-                        val line = reader?.readLine() ?: break
-                        onMessageReceived?.invoke(line)
-                    } catch (e: SocketTimeoutException) {
-                        continue
+                val buffer = ByteArray(4096)
+                val sb = StringBuilder()
+
+                while (socket != null && !socket!!.isClosed) {
+                    val bytesRead = try {
+                        inputStream.read(buffer)
+                    } catch (e: Exception) {
+                        break
+                    }
+                    if (bytesRead <= 0) break
+
+                    val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                    sb.append(chunk)
+
+                    while (sb.contains("\n") || sb.contains("\r")) {
+                        val newlineIdx = sb.indexOfAny(charArrayOf('\n', '\r'))
+                        val line = sb.substring(0, newlineIdx).trim()
+                        if (line.isNotEmpty()) {
+                            onMessageReceived?.invoke(line)
+                        }
+                        var nextIdx = newlineIdx
+                        while (nextIdx < sb.length && (sb[nextIdx] == '\n' || sb[nextIdx] == '\r')) {
+                            nextIdx++
+                        }
+                        sb.delete(0, nextIdx)
+                    }
+
+                    if (sb.isNotEmpty()) {
+                        val remaining = sb.toString().trim()
+                        if (remaining.isNotEmpty()) {
+                            onMessageReceived?.invoke(remaining)
+                            sb.clear()
+                        }
                     }
                 }
             } catch (e: Exception) {

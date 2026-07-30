@@ -16,6 +16,7 @@ import com.example.model.User
 import com.example.network.ChatClient
 import com.example.network.ConnectionState
 import com.example.ui.theme.AppThemeMode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
@@ -107,6 +108,52 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         checkSavedUserAndSetupClient()
     }
 
+    private fun loadDataFromDatabase() {
+        viewModelScope.launch {
+            val dbThreads = threadDao.getAllThreads()
+            val dbMessages = messageDao.getAllMessages()
+
+            val threadsList = dbThreads.map { entity ->
+                val color = colorPalette[entity.partnerName.hashCode().and(0x7FFFFFFF) % colorPalette.size]
+                val partner = User(
+                    id = "user_${entity.partnerName.hashCode()}",
+                    name = entity.partnerName,
+                    username = "@" + entity.partnerName.lowercase().replace("\\s+".toRegex(), ""),
+                    avatarInitials = getInitials(entity.partnerName),
+                    avatarColorHex = color,
+                    isOnline = false
+                )
+                ChatThread(
+                    id = entity.id,
+                    partner = partner,
+                    unreadCount = entity.unreadCount,
+                    lastMessage = Message(
+                        id = "last_${entity.id}",
+                        chatId = entity.id,
+                        senderId = "partner",
+                        text = entity.lastMessageText,
+                        timestamp = entity.lastMessageTime,
+                        formattedTime = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(entity.lastMessageTime)),
+                        status = MessageStatus.READ
+                    )
+                )
+            }
+
+            val map = mutableMapOf<String, List<Message>>()
+            dbMessages.forEach { entity ->
+                val msg = entity.toMessage()
+                map[entity.chatId] = (map[entity.chatId] ?: emptyList()) + msg
+            }
+
+            if (threadsList.isNotEmpty()) {
+                _chatThreads.value = threadsList
+            }
+            if (map.isNotEmpty()) {
+                _messagesMap.value = map
+            }
+        }
+    }
+
     private fun checkSavedUserAndSetupClient() {
         val prefs = getApplication<Application>().getSharedPreferences("aurachat_prefs", Context.MODE_PRIVATE)
         val savedName = prefs.getString("user_name", null)
@@ -140,14 +187,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var pollingJob: kotlinx.coroutines.Job? = null
+
+    private fun startOnlineUsersPolling() {
+        pollingJob?.cancel()
+        pollingJob = viewModelScope.launch {
+            while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
+                queryOnlineUsers()
+                delay(8000)
+            }
+        }
+    }
+
     private fun setupChatClientCallbacks() {
         chatClient.onConnected = {
             _connectionState.value = ConnectionState.CONNECTED
             _connectionMessage.value = "Terkoneksi ke server!"
             _connectionError.value = null
+            queryOnlineUsers()
+            startOnlineUsersPolling()
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+                if (_currentScreen.value is Screen.Connect) {
+                    _currentScreen.value = Screen.ChatList
+                }
+            }
         }
 
         chatClient.onDisconnected = {
+            pollingJob?.cancel()
             if (_connectionState.value != ConnectionState.DISCONNECTED) {
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _connectionMessage.value = "Koneksi terputus"
@@ -155,6 +222,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         chatClient.onError = { error ->
+            pollingJob?.cancel()
             _connectionError.value = error
             _connectionState.value = ConnectionState.ERROR
         }
@@ -281,7 +349,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             trimmed.startsWith("[Private dari ") -> {
                 val senderName = trimmed.substringAfter("[Private dari ").substringBefore("]")
                 val text = trimmed.substringAfter("]: ").trim()
-                handleIncomingMessage(senderName, text, isPrivate = true)
+                if (!senderName.equals(_currentUser.value.name, ignoreCase = true)) {
+                    handleIncomingMessage(senderName, text, isPrivate = true)
+                }
             }
 
             // [Nama]: pesan (broadcast)
@@ -293,8 +363,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _connectionMessage.value = systemMsg
                     return
                 }
-                val text = trimmed.substringAfter("]: ").trim()
-                handleIncomingMessage(senderName, text)
+                if (!senderName.equals(_currentUser.value.name, ignoreCase = true)) {
+                    val text = trimmed.substringAfter("]: ").trim()
+                    handleIncomingMessage(senderName, text)
+                }
             }
 
             // [Sistem] Selamat datang, Nama!
@@ -359,45 +431,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 threads + newThread
             }
         }
-
-        viewModelScope.launch {
-            messageDao.insertMessage(message.toEntity(senderName, isPrivate))
-            val existingThread = threadDao.getThreadById(chatId)
-            if (existingThread != null) {
-                threadDao.updateLastMessage(chatId, text, now)
-                threadDao.updateUnreadCount(chatId, existingThread.unreadCount + 1)
-            } else {
-                threadDao.insertThread(
-                    com.example.data.ChatThreadEntity(
-                        id = chatId,
-                        partnerName = senderName,
-                        lastMessageText = text,
-                        lastMessageTime = now,
-                        unreadCount = 1
-                    )
-                )
-            }
-        }
     }
 
     private fun loadOnlineUsersAsContacts(names: List<String>) {
-        val contacts = names.map { name ->
-            val color = colorPalette[name.hashCode().and(0x7FFFFFFF) % colorPalette.size]
-            ContactItem(
-                user = User(
-                    id = "user_${name.hashCode()}",
-                    name = name,
-                    username = "@" + name.lowercase().replace("\\s+".toRegex(), ""),
-                    avatarInitials = getInitials(name),
-                    avatarColorHex = color,
-                    isOnline = true
-                )
-            )
-        }
-        _chatThreads.value.forEach { thread ->
-            val updatedPartner = thread.partner.copy(isOnline = true)
-            _chatThreads.update { threads ->
-                threads.map { if (it.id == thread.id) it.copy(partner = updatedPartner) else it }
+        _chatThreads.update { threads ->
+            threads.map { thread ->
+                val isOnlineNow = names.any { it.equals(thread.partner.name, ignoreCase = true) }
+                thread.copy(partner = thread.partner.copy(isOnline = isOnlineNow))
             }
         }
     }
@@ -438,17 +478,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         _currentScreen.value = Screen.ChatDetail(chatId)
-
-        viewModelScope.launch {
-            val thread = threadDao.getThreadById(chatId)
-            if (thread != null) {
-                threadDao.updateUnreadCount(chatId, 0)
-            }
-        }
     }
 
     fun openChatWithUser(userName: String) {
-        val chatId = getChatIdForUser(userName)
+        val trimmed = userName.trim()
+        if (trimmed.isBlank() || trimmed.equals(_currentUser.value.name, ignoreCase = true)) return
+        val chatId = getChatIdForUser(trimmed)
         val existing = _chatThreads.value.find { it.id == chatId }
         if (existing == null) {
             val color = colorPalette[userName.hashCode().and(0x7FFFFFFF) % colorPalette.size]
@@ -537,10 +572,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             text
         }
         chatClient.sendMessage(serverMessage)
-
-        viewModelScope.launch {
-            messageDao.insertMessage(newMsg.toEntity(myUser.name))
-        }
     }
 
     fun queryOnlineUsers() {

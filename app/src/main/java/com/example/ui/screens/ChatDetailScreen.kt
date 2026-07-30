@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -82,6 +83,10 @@ fun ChatDetailScreen(
 
     val thread = chatThreads.find { it.id == chatId } ?: return
     val messages = messagesMap[chatId] ?: emptyList()
+
+    BackHandler {
+        onBack()
+    }
 
     var inputText by remember { mutableStateOf("") }
     var selectedMessageForReaction by remember { mutableStateOf<Message?>(null) }

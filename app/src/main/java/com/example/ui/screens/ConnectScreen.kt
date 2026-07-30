@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
@@ -18,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Person
@@ -27,6 +29,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -57,8 +60,15 @@ fun ConnectScreen(
     savedIp: String?,
     savedPort: String,
     onConnect: (ip: String, port: String, name: String) -> Unit,
+    onBack: (() -> Unit)? = null,
     errorMessage: String?
 ) {
+    if (onBack != null) {
+        BackHandler {
+            onBack()
+        }
+    }
+
     var ipInput by remember { mutableStateOf(savedIp ?: "") }
     var portInput by remember { mutableStateOf(savedPort.ifBlank { "9090" }) }
     var nameInput by remember { mutableStateOf(savedName) }
@@ -81,6 +91,20 @@ fun ConnectScreen(
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
+        if (onBack != null) {
+            IconButton(
+                onClick = { onBack() },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Kembali",
+                    tint = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
         AnimatedVisibility(
             visible = isVisible,
             enter = fadeIn() + slideInVertically(initialOffsetY = { 40 })

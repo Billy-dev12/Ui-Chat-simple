@@ -1,5 +1,6 @@
 package com.example.ui.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -183,6 +184,7 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                             val savedName = viewModel.currentUser.collectAsState().value.name
                             val savedIp by viewModel.savedIp.collectAsState()
                             val savedPort by viewModel.savedPort.collectAsState()
+                            val hasSavedIp = !savedIp.isNullOrBlank()
                             ConnectScreen(
                                 connectionState = connectionState,
                                 savedName = savedName,
@@ -191,6 +193,9 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                                 onConnect = { ip, port, name ->
                                     viewModel.connectToServer(ip, port, name)
                                 },
+                                onBack = if (hasSavedIp) {
+                                    { viewModel.navigateTo(Screen.ChatList) }
+                                } else null,
                                 errorMessage = connectionError
                             )
                         }
@@ -213,6 +218,9 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                         }
 
                         is Screen.Contacts -> {
+                            BackHandler {
+                                viewModel.navigateTo(Screen.ChatList)
+                            }
                             ContactsScreen(
                                 viewModel = viewModel,
                                 onOpenChatWithPartnerId = { id -> viewModel.openChat(id) }
@@ -220,6 +228,9 @@ fun AuraChatApp(viewModel: ChatViewModel) {
                         }
 
                         is Screen.Settings -> {
+                            BackHandler {
+                                viewModel.navigateTo(Screen.ChatList)
+                            }
                             SettingsScreen(viewModel = viewModel)
                         }
                     }
